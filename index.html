@@ -150,6 +150,35 @@ input.notes-input:focus{border-color:var(--border);background:var(--surface3)}
 .scen-opt{color:var(--green)}
 .scen-base{color:var(--primary)}
 .scen-cons{color:var(--amber)}
+
+.gem-all-btn{background:none;border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:.75rem;cursor:pointer;transition:all .15s;color:var(--muted)}
+.gem-all-btn:hover{border-color:var(--green);background:var(--green-dim)}
+
+
+.import-btn{margin-left:4px;padding:5px 14px;border-radius:var(--radius);background:var(--surface3);color:var(--primary);border:1px solid var(--primary);font-size:.75rem;font-weight:600;cursor:pointer;transition:all .15s}
+.import-btn:hover{background:var(--primary-dim)}
+#collectrFileInput{display:none}
+
+/* IMPORT MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:500;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s}
+.modal-overlay.open{opacity:1;pointer-events:all}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;width:520px;max-width:90vw;box-shadow:var(--shadow)}
+.modal h2{font-size:.95rem;font-weight:700;margin-bottom:6px}
+.modal p{font-size:.78rem;color:var(--muted);margin-bottom:16px;line-height:1.6}
+.modal-stats{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:16px;font-size:.75rem;display:none}
+.modal-stats.show{display:block}
+.modal-stats table{width:100%}
+.modal-stats td{padding:3px 0;color:var(--muted)}
+.modal-stats td:last-child{text-align:right;color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end}
+.modal-drop{border:2px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;cursor:pointer;transition:border-color .15s;margin-bottom:16px}
+.modal-drop:hover,.modal-drop.drag{border-color:var(--primary)}
+.modal-drop svg{color:var(--muted);margin:0 auto 8px}
+.modal-drop p{font-size:.8rem;color:var(--muted)}
+.modal-drop p span{color:var(--primary);text-decoration:underline;cursor:pointer}
+.modal-log{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;max-height:120px;overflow-y:auto;font-size:.7rem;color:var(--muted);margin-bottom:16px;display:none;font-family:monospace}
+.modal-log.show{display:block}
+
 </style>
 </head>
 <body>
@@ -169,6 +198,9 @@ input.notes-input:focus{border-color:var(--border);background:var(--surface3)}
     </div>
   </div>
   <div class="header-spacer"></div>
+  <button class="import-btn" onclick="openImportModal()">⬆ Import Collectr CSV</button>
+  <button class="import-btn" onclick="bulkSetAllGEM()" title="Set ALL visible filtered cards to GEM and auto-promote">💎 Mark All Visible GEM</button>
+  <input type="file" id="collectrFileInput" accept=".csv" onchange="handleFileSelect(event)">
   <button class="export-btn" onclick="exportCSV()">⬇ Export CSV</button>
 </header>
 
@@ -332,10 +364,106 @@ function updateCond(rank,field,sel){
   const v=sel.value;
   userState[rank][field]=v;
   sel.className='cond '+(v==='GEM'?'gem':v==='NM'?'nm':v==='LP'?'lp':'');
+  checkAutoPromote(rank);
   updateKPIs();
+}
+
+
+
+function bulkSetAllGEM(){
+  const visible=getFilteredCards();
+  if(!confirm(`Set all 4 conditions to GEM for ${visible.length} visible cards and auto-promote? You can still manually override individual cards.`)) return;
+  visible.forEach(c=>{
+    userState[c.rank]._manualSubmit=false;
+    ['centering','corners','edges','surface'].forEach(f=>{userState[c.rank][f]='GEM';});
+    checkAutoPromote(c.rank);
+  });
+  renderTable();
+  updateKPIs();
+  showToast(`💎 ${visible.length} cards set to GEM — YES cards auto-promoted`, 'var(--green)');
+}
+
+function setAllGEM(rank){
+  const fields=['centering','corners','edges','surface'];
+  fields.forEach(f=>{userState[rank][f]='GEM';});
+  userState[rank]._manualSubmit=false; // allow auto-promote to fire
+  // Re-render just this row's condition selects
+  const row=document.querySelector(`tr[data-rank="${rank}"]`);
+  if(row){
+    row.querySelectorAll('select.cond').forEach((sel,i)=>{
+      sel.value='GEM';
+      sel.className='cond gem';
+    });
+  }
+  checkAutoPromote(rank);
+  updateKPIs();
+}
+
+function checkAutoPromote(rank){
+  const us=userState[rank];
+  const card=CARDS.find(c=>c.rank===rank);
+  if(!card) return;
+  const allFilled=us.centering&&us.corners&&us.edges&&us.surface;
+  if(!allFilled) return;
+
+  const allGEM=us.centering==='GEM'&&us.corners==='GEM'&&us.edges==='GEM'&&us.surface==='GEM';
+  const threeGEM=[us.centering,us.corners,us.edges,us.surface].filter(x=>x==='GEM').length===3;
+  const hasLP=[us.centering,us.corners,us.edges,us.surface].some(x=>x==='LP');
+
+  // Don't overwrite if user has already manually set a value
+  const alreadyManual=us._manualSubmit;
+  if(alreadyManual) return;
+
+  let newSubmit=null;
+  let toastMsg=null;
+  let toastColor='var(--green)';
+
+  if(allGEM){
+    newSubmit='YES';
+    toastMsg=`✅ ${card.card} → AUTO-PROMOTED to YES (all GEM)`;
+  } else if(threeGEM&&!hasLP){
+    newSubmit='YES';
+    toastMsg=`✅ ${card.card} → AUTO-PROMOTED to YES (3× GEM, 1× NM)`;
+  } else if(threeGEM&&hasLP){
+    newSubmit='MAYBE';
+    toastMsg=`⚠️ ${card.card} → Set to MAYBE (3× GEM but 1× LP)`;
+    toastColor='var(--amber)';
+  } else if(hasLP){
+    newSubmit='NO';
+    toastMsg=null; // silent demotion
+  }
+
+  if(newSubmit && us.mySubmit!==newSubmit){
+    us.mySubmit=newSubmit;
+    // Update the select dropdown in the DOM
+    const row=document.querySelector(`tr[data-rank="${rank}"]`);
+    if(row){
+      const submitSel=row.querySelector('select.submit-sel');
+      if(submitSel){
+        submitSel.value=newSubmit;
+        const sc=newSubmit==='YES'?'sel-yes':newSubmit==='MAYBE'?'sel-maybe':'sel-no';
+        submitSel.className='submit-sel '+sc;
+      }
+      row.className=newSubmit==='YES'?'row-yes':'';
+    }
+    if(toastMsg) showToast(toastMsg, toastColor);
+  }
+}
+
+function showToast(msg, color){
+  // Stack toasts
+  const existing=document.querySelectorAll('.auto-toast');
+  const offset=existing.length*52;
+  const t=document.createElement('div');
+  t.className='auto-toast';
+  t.style.cssText=`position:fixed;bottom:${24+offset}px;left:50%;transform:translateX(-50%);background:${color};color:${color==='var(--amber)'?'#000':'#000'};font-weight:700;font-size:.78rem;padding:10px 18px;border-radius:6px;z-index:999;transition:opacity .3s;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.4)`;
+  t.textContent=msg;
+  document.body.appendChild(t);
+  setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400)},3000);
 }
 function updateSubmit(rank,sel){
   userState[rank].mySubmit=sel.value;
+  userState[rank]._manualSubmit=true; // user explicitly chose — don't auto-override
   const v=sel.value||CARDS.find(c=>c.rank===rank).ai_submit;
   sel.className='submit-sel '+(v==='YES'?'sel-yes':v==='MAYBE'?'sel-maybe':'sel-no');
   // re-apply row class
@@ -417,6 +545,7 @@ function renderTable(){
       <td>${condSelect(c.rank,'corners',us.corners)}</td>
       <td>${condSelect(c.rank,'edges',us.edges)}</td>
       <td>${condSelect(c.rank,'surface',us.surface)}</td>
+      <td><button class="gem-all-btn tip" data-tip="Set all 4 conditions to GEM" onclick="setAllGEM(${c.rank})">💎</button></td>
       <td><span class="num-pos">${aud(c.psa10)}</span></td>
       <td><span class="num-neutral">${aud(c.psa9)}</span></td>
       <td><span class="${c.psa8>c.raw_aud?'num-neutral':'num-neg'}">${aud(c.psa8)}</span></td>
@@ -467,8 +596,255 @@ function exportCSV(){
   a.click();
 }
 
+
+
+// ─── COLLECTR IMPORT ───────────────────────────────────────────────────────
+let pendingImport = null;
+
+function openImportModal(){
+  document.getElementById('importModal').classList.add('open');
+  pendingImport = null;
+  document.getElementById('importStats').classList.remove('show');
+  document.getElementById('importLog').classList.remove('show');
+  document.getElementById('applyImportBtn').style.display='none';
+  document.getElementById('importLog').innerHTML='';
+}
+function closeImportModal(){
+  document.getElementById('importModal').classList.remove('open');
+}
+function dragOver(e){e.preventDefault();document.getElementById('modalDrop').classList.add('drag')}
+function dragLeave(){document.getElementById('modalDrop').classList.remove('drag')}
+function dropFile(e){
+  e.preventDefault();
+  document.getElementById('modalDrop').classList.remove('drag');
+  const file=e.dataTransfer.files[0];
+  if(file) parseCollectrCSV(file);
+}
+function handleFileSelect(e){
+  const file=e.target.files[0];
+  if(file) parseCollectrCSV(file);
+  e.target.value='';
+}
+
+function parseCollectrCSV(file){
+  const reader=new FileReader();
+  reader.onload=function(e){
+    const text=e.target.result;
+    const lines=text.split('\n').map(l=>l.trim()).filter(l=>l);
+    if(!lines.length){logImport('❌ Empty file'); return;}
+
+    // Parse header
+    const rawHeader=lines[0];
+    const headers=parseCSVLine(rawHeader).map(h=>h.trim().replace(/^"+|"+$/g,''));
+
+    // Find column indices (Collectr schema)
+    const col=(name)=>{
+      const idx=headers.findIndex(h=>h.toLowerCase().includes(name.toLowerCase()));
+      return idx;
+    };
+    const iSet=col('Set'); const iName=col('Product Name');
+    const iNum=col('Card Number'); const iRarity=col('Rarity');
+    const iPrice=col('Market Price'); const iGrade=col('Grade');
+    const iCond=col('Card Condition'); const iCost=col('Average Cost');
+    const iQty=col('Quantity'); const iVariance=col('Variance');
+    const iCategory=col('Category');
+
+    if(iSet<0||iName<0||iPrice<0){
+      logImport('❌ Could not find required columns (Set, Product Name, Market Price). Is this a Collectr export?');
+      return;
+    }
+
+    const AUD_RATE=0.6917; // same as model
+    let parsed=[];
+    let skipped=0; let graded=0; let noPrice=0;
+
+    for(let i=1;i<lines.length;i++){
+      const vals=parseCSVLine(lines[i]);
+      if(vals.length<5){skipped++;continue;}
+      const get=(idx)=>idx>=0&&idx<vals.length?vals[idx].replace(/^"+|"+$/g,'').trim():'';
+
+      const category=get(iCategory).toLowerCase();
+      if(category && !category.includes('pokemon')){skipped++;continue;} // skip non-Pokemon
+
+      const setName=get(iSet);
+      const cardName=get(iName);
+      const cardNum=get(iNum);
+      const rarity=get(iRarity);
+      const priceRaw=get(iPrice).replace(/[$,]/g,'');
+      const marketAUD=parseFloat(priceRaw)||0;
+      const grade=get(iGrade);
+      const condition=get(iCond);
+      const costRaw=get(iCost).replace(/[$,]/g,'');
+      const costAUD=parseFloat(costRaw)||0;
+      const qty=parseInt(get(iQty))||1;
+
+      if(!setName&&!cardName){skipped++;continue;}
+      if(marketAUD===0){noPrice++;continue;}
+
+      const isGraded=grade&&grade.toLowerCase()!=='ungraded'&&grade.trim()!=='';
+      if(isGraded) graded++;
+
+      parsed.push({setName,cardName,cardNum,rarity,marketAUD,grade,condition,costAUD,qty,isGraded});
+    }
+
+    if(!parsed.length){
+      logImport('❌ No valid Pokémon rows found after parsing.');
+      return;
+    }
+
+    // Match against CARDS array
+    let matched=0; let newCards=0; let priceUpdates=0;
+    const matchResults=[];
+
+    parsed.forEach(row=>{
+      // Try to find existing card by set+name fuzzy match
+      const normSet=normalise(row.setName);
+      const normName=normalise(row.cardName);
+      const existing=CARDS.find(c=>{
+        return normalise(c.set)===normSet && normalise(c.card)===normName;
+      }) || CARDS.find(c=>{
+        return normalise(c.set)===normSet && normalise(c.card).includes(normName.slice(0,12));
+      }) || CARDS.find(c=>{
+        return normalise(c.card)===normName;
+      });
+
+      if(existing){
+        const oldPrice=existing.raw_aud;
+        const diff=Math.abs(row.marketAUD-oldPrice);
+        if(diff>0.5){
+          matchResults.push({card:existing,newPrice:row.marketAUD,oldPrice,isGraded:row.isGraded,grade:row.grade,qty:row.qty});
+          priceUpdates++;
+        }
+        matched++;
+      } else {
+        newCards++;
+        matchResults.push({card:null,row,isNew:true});
+      }
+    });
+
+    pendingImport={parsed,matchResults,matched,newCards,priceUpdates,graded,skipped,noPrice,total:parsed.length};
+    showImportStats(pendingImport);
+  };
+  reader.readAsText(file);
+}
+
+function normalise(s){
+  return (s||'').toLowerCase().replace(/[^a-z0-9]/g,' ').replace(/\s+/g,' ').trim();
+}
+
+function parseCSVLine(line){
+  const result=[];let cur='';let inQ=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){inQ=!inQ;}
+    else if(ch===','&&!inQ){result.push(cur);cur='';}
+    else{cur+=ch;}
+  }
+  result.push(cur);
+  return result;
+}
+
+function logImport(msg){
+  const log=document.getElementById('importLog');
+  log.classList.add('show');
+  log.innerHTML+=msg+'<br>';
+}
+
+function showImportStats(imp){
+  const stats=document.getElementById('importStats');
+  stats.classList.add('show');
+  stats.innerHTML=`<table>
+    <tr><td>Rows parsed</td><td>${imp.total}</td></tr>
+    <tr><td>Matched to existing cards</td><td>${imp.matched}</td></tr>
+    <tr><td>Price updates found</td><td style="color:var(--amber)">${imp.priceUpdates}</td></tr>
+    <tr><td>New cards (not in model)</td><td style="color:var(--muted)">${imp.newCards}</td></tr>
+    <tr><td>Already graded (PSA/TAG)</td><td style="color:var(--primary)">${imp.graded}</td></tr>
+    <tr><td>Skipped (no price / non-Pokémon)</td><td>${imp.skipped+imp.noPrice}</td></tr>
+  </table>`;
+  document.getElementById('importLog').classList.add('show');
+  let logHtml='';
+  imp.matchResults.filter(r=>!r.isNew).slice(0,15).forEach(r=>{
+    const dir=r.newPrice>r.oldPrice?'▲':'▼';
+    const col=r.newPrice>r.oldPrice?'var(--green)':'var(--red)';
+    logHtml+=`<span style="color:${col}">${dir}</span> ${r.card.card} — A$${r.oldPrice.toFixed(0)} → A$${r.newPrice.toFixed(0)}<br>`;
+  });
+  if(imp.matchResults.filter(r=>!r.isNew).length>15) logHtml+=`... and ${imp.matchResults.filter(r=>!r.isNew).length-15} more price updates<br>`;
+  document.getElementById('importLog').innerHTML=logHtml||'No price changes detected in matched cards.';
+  document.getElementById('applyImportBtn').style.display=imp.priceUpdates>0?'block':'none';
+  if(imp.priceUpdates===0){
+    const btn=document.getElementById('applyImportBtn');
+    btn.style.display='block';
+    btn.textContent='✓ Prices Up to Date';
+    btn.disabled=true;
+  }
+}
+
+function applyImport(){
+  if(!pendingImport) return;
+  let updated=0;
+  pendingImport.matchResults.filter(r=>!r.isNew&&r.newPrice).forEach(r=>{
+    r.card.raw_aud=r.newPrice;
+    // Recalculate EV fields using same model logic
+    const AUD=r.newPrice;
+    const p10=r.card.p10; const p9=r.card.p9; const p8=r.card.p8;
+    const psaFeeAUD=r.card.psa_fee_usd/0.6917;
+    const tagFeeAUD=r.card.tag_fee_usd/0.6917;
+    // Recompute PSA10/9/8 proportionally if we have them
+    if(r.card.psa10){
+      const ratio=AUD/(r.oldPrice||AUD);
+      r.card.psa10=+(r.card.psa10*ratio).toFixed(2);
+      r.card.psa9=+(r.card.psa9*ratio).toFixed(2);
+      r.card.psa8=+(r.card.psa8*ratio).toFixed(2);
+      const ev_psa=(p10*r.card.psa10+p9*r.card.psa9+p8*r.card.psa8)-AUD-psaFeeAUD;
+      const ev_tag=(p10*(r.card.psa10*.88)+p9*(r.card.psa9*.88)+p8*(r.card.psa8*.88))-AUD-tagFeeAUD;
+      r.card.ev_psa=+ev_psa.toFixed(2);
+      r.card.ev_tag=+ev_tag.toFixed(2);
+      r.card.base_net=+ev_psa.toFixed(2);
+      r.card.opt_net=+(r.card.psa10-AUD-psaFeeAUD).toFixed(2);
+      r.card.cons_net=+Math.max(0,(r.card.psa9*.6-AUD-psaFeeAUD)).toFixed(2);
+      // Update provider/ai_submit based on new EV
+      if(ev_psa>0&&ev_psa>=ev_tag) r.card.provider='PSA';
+      else if(ev_tag>0) r.card.provider='TAG';
+      else r.card.provider='HOLD RAW';
+      r.card.ai_submit=ev_psa>50?'YES':ev_psa>0?'MAYBE':'NO';
+    }
+    updated++;
+  });
+  closeImportModal();
+  renderTable();
+  updateKPIs();
+  // Toast
+  const t=document.createElement('div');
+  t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--green);color:#000;font-weight:700;font-size:.8rem;padding:10px 20px;border-radius:6px;z-index:999;transition:opacity .3s';
+  t.textContent=`✓ ${updated} cards updated from Collectr import`;
+  document.body.appendChild(t);
+  setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400)},2500);
+}
+// Close modal on overlay click
+document.getElementById('importModal').addEventListener('click',function(e){if(e.target===this)closeImportModal()});
+
 // Init
 renderTable();
 </script>
+
+<!-- COLLECTR IMPORT MODAL -->
+<div class="modal-overlay" id="importModal">
+  <div class="modal">
+    <h2>📥 Import Collectr CSV</h2>
+    <p>Drop any <strong>Collectr export.csv</strong> to refresh your card data and market prices. Your existing condition grades, submit overrides, and notes are preserved for matching cards.<br><br>
+    Expected columns: <code>Set, Product Name, Card Number, Rarity, Market Price, Grade, Card Condition, Average Cost Paid, Quantity</code></p>
+    <div class="modal-drop" id="modalDrop" onclick="document.getElementById('collectrFileInput').click()" ondragover="dragOver(event)" ondragleave="dragLeave(event)" ondrop="dropFile(event)">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:block"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <p>Drag &amp; drop your <strong>export.csv</strong> here, or <span>browse</span></p>
+    </div>
+    <div class="modal-stats" id="importStats"></div>
+    <div class="modal-log" id="importLog"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeImportModal()">Cancel</button>
+      <button class="export-btn" id="applyImportBtn" onclick="applyImport()" style="display:none">Apply Import</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
